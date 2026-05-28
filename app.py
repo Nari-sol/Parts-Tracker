@@ -48,34 +48,34 @@ st.markdown("""
         box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
     }
     
-    /* メトリック値の強調表示 */
+    /* メトリック値の強調表示（カラーはStreamlitのデフォルトに従う） */
     div[data-testid="stMetricValue"] {
         font-size: 2.5rem;
         font-weight: 700;
-        color: #6366f1;
     }
     
-    /* シミュレーション結果表示の巨大ハイライト */
+    /* シミュレーション結果表示の巨大ハイライト（濃いグラデーション＋白文字） */
     .result-box {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(79, 70, 229, 0.1) 100%);
-        border: 2px solid #6366f1;
+        background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+        border: none;
         border-radius: 12px;
         padding: 24px;
         text-align: center;
         margin: 20px 0;
-        box-shadow: 0 8px 24px rgba(99, 102, 241, 0.1);
+        box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3);
     }
     .result-val {
         font-size: 3.5rem;
         font-weight: 800;
-        color: #4f46e5;
+        color: #ffffff;
         margin: 10px 0;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.15);
     }
     .result-title {
         font-size: 1rem;
         text-transform: uppercase;
         letter-spacing: 1.5px;
-        color: #64748b;
+        color: rgba(255, 255, 255, 0.9);
     }
     
     /* タイムラインの箇条書き調整 */
@@ -361,21 +361,24 @@ elif menu == "🛠️ 発注シミュレーション":
                 if copied_parts_text:
                     part_numbers_to_calc = [p.strip() for p in copied_parts_text.split("\n") if p.strip()]
                     
-            # 集計期間の選択肢をデータベースから取得（昇順）
-            ym_options = sorted(db.get_unique_months())
+            # 当月から未来2年分（24ヶ月分）の年月リストを動的に生成 ('YYYY-MM' 形式)
+            now = datetime.now()
+            current_year = now.year
+            current_month = now.month
             
-            # デフォルト値の設定
+            sim_ym_options = []
+            for i in range(24):
+                m_idx = current_month - 1 + i
+                y_add = m_idx // 12
+                m_real = (m_idx % 12) + 1
+                sim_ym_options.append(f"{current_year + y_add}-{m_real:02d}")
+            
+            # デフォルト値の設定（発注時期は当月、納期は翌月）
             order_index = 0
-            delivery_index = 0
+            delivery_index = min(1, len(sim_ym_options) - 1)
             
-            if ym_options:
-                # 発注時期は直近の月（最後から2番目）
-                order_index = max(0, len(ym_options) - 2)
-                # 納期は直近の月（最後の月）
-                delivery_index = len(ym_options) - 1
-            
-            order_ym = st.selectbox("発注時期 (年月)", ym_options, index=order_index, key="sim_order_ym")
-            delivery_ym_choice = st.selectbox("納期 (納入年月)", ym_options, index=delivery_index, key="sim_delivery_ym")
+            order_ym = st.selectbox("発注時期 (年月)", sim_ym_options, index=order_index, key="sim_order_ym")
+            delivery_ym_choice = st.selectbox("納期 (納入年月)", sim_ym_options, index=delivery_index, key="sim_delivery_ym")
             
             cover_months = st.selectbox(
                 "必要期間 (何か月分の数量が必要か)", 

@@ -105,6 +105,118 @@ for p in parts_dict:
     part_options.append(label)
     part_name_map[label] = p['part_number']
 
+def get_recent_3_months(latest_ym):
+    """基準月から直近3ヶ月間（基準月含む）と前年同期間の月リストを返します"""
+    y, m = map(int, latest_ym.split('-'))
+    current_months = []
+    prev_months = []
+    for i in range(3):
+        cm = m - i
+        cy = y
+        while cm <= 0:
+            cm += 12
+            cy -= 1
+        current_months.append(f"{cy}-{cm:02d}")
+        prev_months.append(f"{cy-1}-{cm:02d}")
+    return sorted(current_months), sorted(prev_months)
+
+def get_fiscal_year_to_date(latest_ym):
+    """基準月が含まれる会計年度の期首（10月）から基準月までと前年同期間の月リストを返します"""
+    y, m = map(int, latest_ym.split('-'))
+    if m >= 10:
+        start_y = y
+    else:
+        start_y = y - 1
+        
+    current_months = []
+    cy, cm = start_y, 10
+    while True:
+        current_months.append(f"{cy}-{cm:02d}")
+        if cy == y and cm == m:
+            break
+        cm += 1
+        if cm > 12:
+            cm = 1
+            cy += 1
+            
+    prev_months = []
+    for ym in current_months:
+        cy_p, cm_p = map(int, ym.split('-'))
+        prev_months.append(f"{cy_p-1}-{cm_p:02d}")
+        
+    return current_months, prev_months
+
+def calculate_yoy_ratio(part_numbers):
+    """
+    対象品番リストについて、最新月を基準とし、
+    直近3ヶ月および今期累計の前年同期比（倍率）を計算して返します。
+    """
+    if not part_numbers:
+        return None
+    
+    # データベースからユニークな年月を取得
+    months = db.get_unique_months()
+    if not months:
+        return None
+    
+    latest_ym = months[0]
+    
+    # 1. 直近3ヶ月の算出
+    curr_3m_list, prev_3m_list = get_recent_3_months(latest_ym)
+    
+    # 2. 今期累計の算出
+    curr_ytd_list, prev_ytd_list = get_fiscal_year_to_date(latest_ym)
+    
+    # それぞれの期間の実績データを取得して合計を計算するヘルパー関数
+    def get_period_stats(part_nums, curr_list, prev_list):
+        start_curr, end_curr = curr_list[0], curr_list[-1]
+        start_prev, end_prev = prev_list[0], prev_list[-1]
+        
+        df_curr = db.query_records(part_nums, start_date=start_curr, end_date=end_curr)
+        df_prev = db.query_records(part_nums, start_date=start_prev, end_date=end_prev)
+        
+        if not df_curr.empty:
+            df_curr = df_curr[df_curr['date'].isin(curr_list)]
+        if not df_prev.empty:
+            df_prev = df_prev[df_prev['date'].isin(prev_list)]
+            
+        sum_curr = df_curr['quantity'].sum() if not df_curr.empty else 0.0
+        sum_prev = df_prev['quantity'].sum() if not df_prev.empty else 0.0
+        
+        if df_prev.empty or sum_prev == 0:
+            return {
+                'start_current': start_curr,
+                'end_current': end_curr,
+                'start_prev': start_prev,
+                'end_prev': end_prev,
+                'sum_current': sum_curr,
+                'sum_prev': sum_prev,
+                'ratio': None,
+                'status': '前年データなし'
+            }
+            
+        ratio = sum_curr / sum_prev
+        return {
+            'start_current': start_curr,
+            'end_current': end_curr,
+            'start_prev': start_prev,
+            'end_prev': end_prev,
+            'sum_current': sum_curr,
+            'sum_prev': sum_prev,
+            'ratio': ratio,
+            'status': 'OK'
+        }
+        
+    res_3m = get_period_stats(part_numbers, curr_3m_list, prev_3m_list)
+    res_ytd = get_period_stats(part_numbers, curr_ytd_list, prev_ytd_list)
+    
+    return {
+        'status': 'OK',
+        'latest_ym': latest_ym,
+        'recent_3m': res_3m,
+        'ytd': res_ytd
+    }
+
 # ==============================================================================
 # SCREEN 1: 期間実績の抽出
 # ==============================================================================
@@ -406,6 +518,95 @@ elif menu == "🛠️ 発注シミュレーション":
                 key="sim_safety_factor"
             )
             
+            # --- 前年同期比の目安表示機能 ---
+            if part_numbers_to_calc:
+                def get_month_num(ym_str):
+                    return int(ym_str.split('-')[1])
+                
+                def format_ratio(ratio, status):
+                    if status != 'OK' or ratio is None:
+                        return "前年データなし"
+                    return f"{ratio:.2f}倍" if ratio % 1 != 0 else f"{int(ratio)}倍"
+
+                if sim_mode == "単一品番モード":
+                    yoy_data = calculate_yoy_ratio(part_numbers_to_calc)
+                    if yoy_data and yoy_data.get('status') == 'OK':
+                        r3m = yoy_data['recent_3m']
+                        ytd = yoy_data['ytd']
+                        
+                        m_start_3m = get_month_num(r3m['start_current'])
+                        m_end_3m = get_month_num(r3m['end_current'])
+                        period_3m = f"{m_start_3m}月" if m_start_3m == m_end_3m else f"{m_start_3m}月〜{m_end_3m}月"
+                        
+                        m_start_ytd = get_month_num(ytd['start_current'])
+                        m_end_ytd = get_month_num(ytd['end_current'])
+                        period_ytd = f"{m_start_ytd}月" if m_start_ytd == m_end_ytd else f"{m_start_ytd}月〜{m_end_ytd}月"
+                        
+                        ratio_3m_str = format_ratio(r3m['ratio'], r3m['status'])
+                        ratio_ytd_str = format_ratio(ytd['ratio'], ytd['status'])
+                        
+                        single_part = part_numbers_to_calc[0]
+                        st.markdown(
+                            f'<div style="background-color: #333333; padding: 15px; border-radius: 8px; color: #ffffff; margin-bottom: 20px;">'
+                            f'<strong style="font-size: 1.1rem; color: #a5b4fc; display: block; margin-bottom: 10px;">💡 前年同期比の目安 (品番：{single_part})</strong>'
+                            f'・直近3ヶ月（{period_3m}）の伸び率：<strong>{ratio_3m_str}</strong><br>'
+                            f'・今期累計（{period_ytd}）の伸び率：<strong>{ratio_ytd_str}</strong>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    # 複数品番比較モードの場合は個別計算してHTMLカード表示
+                    yoy_list = []
+                    for p_num in part_numbers_to_calc:
+                        if not db.has_part(p_num):
+                            yoy_list.append(
+                                f'<div style="margin-bottom: 15px;">'
+                                f'<strong>【品番：{p_num}】</strong><br>'
+                                f'・状態：未登録'
+                                f'</div>'
+                            )
+                            continue
+                            
+                        yoy_data = calculate_yoy_ratio([p_num])
+                        if yoy_data and yoy_data.get('status') == 'OK':
+                            r3m = yoy_data['recent_3m']
+                            ytd = yoy_data['ytd']
+                            
+                            m_start_3m = get_month_num(r3m['start_current'])
+                            m_end_3m = get_month_num(r3m['end_current'])
+                            period_3m = f"{m_start_3m}月" if m_start_3m == m_end_3m else f"{m_start_3m}月〜{m_end_3m}月"
+                            
+                            m_start_ytd = get_month_num(ytd['start_current'])
+                            m_end_ytd = get_month_num(ytd['end_current'])
+                            period_ytd = f"{m_start_ytd}月" if m_start_ytd == m_end_ytd else f"{m_start_ytd}月〜{m_end_ytd}月"
+                            
+                            ratio_3m_str = format_ratio(r3m['ratio'], r3m['status'])
+                            ratio_ytd_str = format_ratio(ytd['ratio'], ytd['status'])
+                            
+                            yoy_list.append(
+                                f'<div style="margin-bottom: 15px;">'
+                                f'<strong>【品番：{p_num}】</strong><br>'
+                                f'・直近3ヶ月（{period_3m}）の伸び率：<strong>{ratio_3m_str}</strong><br>'
+                                f'・今期累計（{period_ytd}）の伸び率：<strong>{ratio_ytd_str}</strong>'
+                                f'</div>'
+                            )
+                        else:
+                            yoy_list.append(
+                                f'<div style="margin-bottom: 15px;">'
+                                f'<strong>【品番：{p_num}】</strong><br>'
+                                f'・状態：データなし'
+                                f'</div>'
+                            )
+                            
+                    if yoy_list:
+                        html_content = (
+                            f'<div style="background-color: #333333; padding: 15px; border-radius: 8px; color: #ffffff; margin-bottom: 20px;">'
+                            f'<strong style="font-size: 1.1rem; color: #a5b4fc; display: block; margin-bottom: 15px;">💡 前年同期比の目安</strong>'
+                            f'{"".join(yoy_list)}'
+                            f'</div>'
+                        )
+                        st.markdown(html_content, unsafe_allow_html=True)
+            
             submitted = st.button("シミュレーションを実行", key="btn_run_sim")
 
         with col_sim_2:
@@ -605,11 +806,30 @@ elif menu == "🛠️ 発注シミュレーション":
                             if results_list:
                                 comparison_data = []
                                 for res in results_list:
+                                    p_num = res['part_number']
+                                    yoy_3m_val = "-"
+                                    yoy_ytd_val = "-"
+                                    if res['status'] == '計算成功':
+                                        p_yoy = calculate_yoy_ratio([p_num])
+                                        if p_yoy and p_yoy['status'] == 'OK':
+                                            r3m = p_yoy['recent_3m']
+                                            ytd = p_yoy['ytd']
+                                            
+                                            def format_ratio(ratio, status):
+                                                if status != 'OK' or ratio is None:
+                                                    return "前年データなし"
+                                                return f"{ratio:.2f}倍" if ratio % 1 != 0 else f"{int(ratio)}倍"
+                                                
+                                            yoy_3m_val = format_ratio(r3m['ratio'], r3m['status'])
+                                            yoy_ytd_val = format_ratio(ytd['ratio'], ytd['status'])
+                                            
                                     comparison_data.append({
                                         "品番": res['part_number'],
                                         "品名": res['part_name'],
                                         "状態": res['status'],
                                         "予測計算ロジック": logic if res['status'] == '計算成功' else '-',
+                                        "前年比（直近3ヶ月）": yoy_3m_val,
+                                        "前年比（今期累計）": yoy_ytd_val,
                                         "予測ベース合計": res['raw_sum'],
                                         "安全バッファ": res['buffer_qty'],
                                         "推奨発注数量": res['final_qty']

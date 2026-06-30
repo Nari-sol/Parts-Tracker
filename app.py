@@ -376,7 +376,7 @@ if menu == "📊 期間実績の抽出":
                         # 詳細データテーブル
                         with st.expander("📝 月別詳細データ一覧を表示"):
                             display_df = df.copy()
-                            display_df.columns = ["年月", "品番", "品名", "実績数量"]
+                            display_df.columns = ["年月", "品番", "品名", "実績数量", "入庫数量", "残数量"]
                             st.dataframe(display_df.set_index("年月"), use_container_width=True)
                     
                     else:
@@ -511,10 +511,13 @@ elif menu == "🛠️ 発注シミュレーション":
                 key="sim_logic"
             )
             
-            safety_factor = st.selectbox(
+            safety_factor = st.slider(
                 "安全バッファ (安全係数)",
-                ["なし (1.0倍)", "10%追加 (1.1倍)", "20%追加 (1.2倍)", "30%追加 (1.3倍)", "50%追加 (1.5倍)"],
-                index=2, # デフォルト1.2倍
+                min_value=1.0,
+                max_value=5.0,
+                value=1.2,
+                step=0.1,
+                help="1.0倍でバッファなし、最大5.0倍まで設定可能です。",
                 key="sim_safety_factor"
             )
             
@@ -626,7 +629,7 @@ elif menu == "🛠️ 発注シミュレーション":
                         target_months.append(f"{d_year + y_add}-{m_real:02d}")
                         
                     # 安全係数の数値抽出
-                    factor_val = float(safety_factor.split(" (")[1].replace("倍)", "").replace("1.0", "1.0").replace("1.1", "1.1").replace("1.2", "1.2").replace("1.3", "1.3").replace("1.5", "1.5"))
+                    factor_val = float(safety_factor)
 
                     # 一括シミュレーション計算
                     results_list = []
@@ -745,8 +748,16 @@ elif menu == "🛠️ 発注シミュレーション":
 
                         # 総和と安全係数の適用
                         raw_sum = sum(p['predicted'] for p in predictions)
-                        final_order_qty = round(raw_sum * factor_val)
-                        buffer_qty = final_order_qty - raw_sum
+                        predicted_qty = round(raw_sum * factor_val)
+                        buffer_qty = predicted_qty - raw_sum
+                        
+                        # 最新の残数量の取得
+                        latest_stock_qty = 0
+                        if 'stock_quantity' in df_part.columns and not df_part['stock_quantity'].empty:
+                            latest_stock_qty = int(df_part['stock_quantity'].iloc[-1])
+
+                        # 推奨発注数量 ＝ 必要予測数量 － 最新の残数量 (0未満は0にする)
+                        final_order_qty = max(0, predicted_qty - latest_stock_qty)
 
                         # 正常系データの蓄積
                         results_list.append({
@@ -754,6 +765,8 @@ elif menu == "🛠️ 発注シミュレーション":
                             'part_name': part_name,
                             'raw_sum': raw_sum,
                             'buffer_qty': buffer_qty,
+                            'predicted_qty': predicted_qty,
+                            'latest_stock_qty': latest_stock_qty,
                             'final_qty': final_order_qty,
                             'predictions': predictions,
                             'explanation': explanation,
@@ -800,7 +813,14 @@ elif menu == "🛠️ 発注シミュレーション":
                                         </div>
                                         """, unsafe_allow_html=True)
                                         
-                                    st.success(f"計算結果: 予測ベース合計 {res['raw_sum']:,} 個 × 安全係数 {factor_val} ＝ 推奨発注数量 {res['final_qty']:,} 個")
+                                    st.markdown(f"""
+                                    <div class="timeline-item" style="border-left-color: #ef4444;">
+                                        <strong>最新の残数量: -{res['latest_stock_qty']:,} 個</strong><br>
+                                        <span style="font-size: 0.85rem; color: #64748b;">(計算式: 必要予測数量 {res['predicted_qty']:,} - 残数量 {res['latest_stock_qty']:,})</span>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                        
+                                    st.success(f"計算結果: 予測ベース合計 {res['raw_sum']:,} 個 × 安全係数 {factor_val} ＝ 必要予測数量 {res['predicted_qty']:,} 個 － 最新の残数量 {res['latest_stock_qty']:,} 個 ＝ 推奨発注数量 {res['final_qty']:,} 個")
                         else:
                             # 複数品番比較モード
                             if results_list:
@@ -832,6 +852,8 @@ elif menu == "🛠️ 発注シミュレーション":
                                         "前年比（今期累計）": yoy_ytd_val,
                                         "予測ベース合計": res['raw_sum'],
                                         "安全バッファ": res['buffer_qty'],
+                                        "必要予測数量": res.get('predicted_qty', 0),
+                                        "最新の残数量": res.get('latest_stock_qty', 0),
                                         "推奨発注数量": res['final_qty']
                                     })
                                 df_compare = pd.DataFrame(comparison_data)
@@ -841,6 +863,8 @@ elif menu == "🛠️ 発注シミュレーション":
                                     column_config={
                                         "予測ベース合計": st.column_config.NumberColumn(format="%d 個"),
                                         "安全バッファ": st.column_config.NumberColumn(format="+%d 個"),
+                                        "必要予測数量": st.column_config.NumberColumn(format="%d 個"),
+                                        "最新の残数量": st.column_config.NumberColumn(format="%d 個"),
                                         "推奨発注数量": st.column_config.NumberColumn(format="%d 個"),
                                     }
                                 )
@@ -889,10 +913,10 @@ elif menu == "📂 データ管理":
                         
                         st.success(f"📅 対象期間を検出しました: **{target_month}** ({a2_value})")
                         
-                        # 2. 実データの読み込み (上部4行をスキップし、5行目をヘッダーとする)
-                        # ※アップロードファイルのポインタを先頭に戻す必要は pandas.read_excel では通常自動処理されますが、
-                        # st.file_uploaderの挙動を考慮し、再度ファイルを読み込みます。
-                        df_data = pd.read_excel(uploaded_file, skiprows=4)
+                        # 2. 実データの読み込み (5行目をヘッダーとして認識させる)
+                        # 一度読み込んだファイルポインタを先頭に戻す
+                        uploaded_file.seek(0)
+                        df_data = pd.read_excel(uploaded_file, header=4)
                         
                         # 3. データのクレンジングと集計
                         if "コード" not in df_data.columns or "出庫数量" not in df_data.columns:
@@ -900,7 +924,7 @@ elif menu == "📂 データ管理":
                             st.write("検出された項目名:", list(df_data.columns))
                         else:
                             # 欠損値の除去（コードがない行は除外）
-                            df_clean = df_data.dropna(subset=["コード"])
+                            df_clean = df_data.dropna(subset=["コード"]).copy()
                             
                             # コード列のハイフン分割と品番上書き
                             df_clean["品番"] = df_clean["コード"].astype(str).apply(lambda x: x.split("-")[0].strip())
@@ -908,25 +932,42 @@ elif menu == "📂 データ管理":
                             # 出庫数量を数値化
                             df_clean["出庫数量"] = pd.to_numeric(df_clean["出庫数量"], errors='coerce').fillna(0.0)
                             
-                            # 品名列があれば抽出
-                            has_name = "品名" in df_clean.columns
-                            if has_name:
-                                df_clean["品名"] = df_clean["品名"].astype(str).str.strip()
-                                # 品番ごとに最初の品名を取得
-                                name_mapping = df_clean.groupby("品番")["品名"].first().reset_index()
+                            # B列 (インデックス1) から品名を取得
+                            if df_clean.shape[1] > 1:
+                                df_clean["品名"] = df_clean.iloc[:, 1].astype(str).str.strip()
+                                df_clean["品名"] = df_clean["品名"].replace("nan", "品名未登録").replace("None", "品名未登録").replace("", "品名未登録")
+                            else:
+                                df_clean["品名"] = "品名未登録"
+                                
+                            # D列 (インデックス3) から入庫数量を取得
+                            if df_clean.shape[1] > 3:
+                                df_clean["入庫数量"] = pd.to_numeric(df_clean.iloc[:, 3], errors='coerce').fillna(0.0)
+                            else:
+                                df_clean["入庫数量"] = 0.0
+                                
+                            # F列 (インデックス5) から残数量を取得
+                            if df_clean.shape[1] > 5:
+                                df_clean["残数量"] = pd.to_numeric(df_clean.iloc[:, 5], errors='coerce').fillna(0.0)
+                            else:
+                                df_clean["残数量"] = 0.0
+                                
+                            # 品番ごとに最初の品名と最新の残・入庫数量を取得
+                            info_mapping = df_clean.groupby("品番").agg({
+                                "品名": "first",
+                                "入庫数量": "first",
+                                "残数量": "first"
+                            }).reset_index()
                             
                             # 品番ごとにグループ化して出庫数量の合計を計算
                             df_grouped = df_clean.groupby("品番")["出庫数量"].sum().reset_index()
                             
-                            if has_name:
-                                df_grouped = pd.merge(df_grouped, name_mapping, on="品番", how="left")
-                            else:
-                                df_grouped["品名"] = ""
+                            # 品名と残数量の結合
+                            df_grouped = pd.merge(df_grouped, info_mapping, on="品番", how="left")
                                 
                             # プレビュー表示
                             st.write("📋 読み込み・集計結果プレビュー:")
                             preview_display = df_grouped.copy()
-                            preview_display.columns = ["品番", "集計出庫数量", "品名"]
+                            preview_display.columns = ["品番", "集計出庫数量", "品名", "入庫数量", "残数量"]
                             st.dataframe(preview_display, use_container_width=True)
                             
                             # データベース登録フォーム
@@ -948,7 +989,9 @@ elif menu == "📂 データ管理":
                                             'part_number': row['品番'],
                                             'date': target_month,
                                             'quantity': row['出庫数量'],
-                                            'part_name': row['品名']
+                                            'part_name': row['品名'],
+                                            'stock_quantity': row['残数量'],
+                                            'inbound_quantity': row['入庫数量']
                                         })
                                         
                                     success, skips = db.save_records(records_to_save)

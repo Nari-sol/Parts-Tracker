@@ -28,7 +28,9 @@ def init_db():
             part_number TEXT NOT NULL,
             date TEXT NOT NULL,          -- YYYY-MM 形式
             quantity REAL NOT NULL,
-            part_name TEXT
+            part_name TEXT,
+            stock_quantity REAL DEFAULT 0.0,
+            inbound_quantity REAL DEFAULT 0.0
         )
     ''')
     
@@ -37,6 +39,17 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_part_date 
         ON actual_records (part_number, date)
     ''')
+    
+    # 既存テーブルへのカラム追加（すでに存在する場合はエラーを無視する）
+    try:
+        cursor.execute('ALTER TABLE actual_records ADD COLUMN stock_quantity REAL DEFAULT 0.0')
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        cursor.execute('ALTER TABLE actual_records ADD COLUMN inbound_quantity REAL DEFAULT 0.0')
+    except sqlite3.OperationalError:
+        pass
     
     conn.commit()
     conn.close()
@@ -59,8 +72,8 @@ def save_records(records):
     
     # データを一括で INSERT OR REPLACE
     query = '''
-        INSERT OR REPLACE INTO actual_records (part_number, date, quantity, part_name)
-        VALUES (?, ?, ?, ?)
+        INSERT OR REPLACE INTO actual_records (part_number, date, quantity, part_name, stock_quantity, inbound_quantity)
+        VALUES (?, ?, ?, ?, ?, ?)
     '''
     
     for rec in records:
@@ -71,6 +84,16 @@ def save_records(records):
             quantity = float(rec.get('quantity', 0))
         except (ValueError, TypeError):
             quantity = 0.0
+            
+        try:
+            stock_quantity = float(rec.get('stock_quantity', 0))
+        except (ValueError, TypeError):
+            stock_quantity = 0.0
+            
+        try:
+            inbound_quantity = float(rec.get('inbound_quantity', 0))
+        except (ValueError, TypeError):
+            inbound_quantity = 0.0
             
         part_name = rec.get('part_name', '')
         if part_name:
@@ -83,7 +106,7 @@ def save_records(records):
             skip_count += 1
             continue
             
-        cursor.execute(query, (part_number, date, quantity, part_name))
+        cursor.execute(query, (part_number, date, quantity, part_name, stock_quantity, inbound_quantity))
         success_count += 1
         
     conn.commit()
@@ -119,12 +142,12 @@ def query_records(part_number, start_date=None, end_date=None):
     if isinstance(part_number, (list, tuple)):
         if not part_number:
             conn.close()
-            return pd.DataFrame(columns=['date', 'part_number', 'part_name', 'quantity'])
+            return pd.DataFrame(columns=['date', 'part_number', 'part_name', 'quantity', 'inbound_quantity', 'stock_quantity'])
         placeholders = ','.join(['?'] * len(part_number))
-        query = f'SELECT date, part_number, part_name, quantity FROM actual_records WHERE part_number IN ({placeholders})'
+        query = f'SELECT date, part_number, part_name, quantity, inbound_quantity, stock_quantity FROM actual_records WHERE part_number IN ({placeholders})'
         params = list(part_number)
     else:
-        query = 'SELECT date, part_number, part_name, quantity FROM actual_records WHERE part_number = ?'
+        query = 'SELECT date, part_number, part_name, quantity, inbound_quantity, stock_quantity FROM actual_records WHERE part_number = ?'
         params = [part_number]
     
     if start_date:

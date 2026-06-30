@@ -42,13 +42,13 @@ def init_db():
     
     # 既存テーブルへのカラム追加（すでに存在する場合はエラーを無視する）
     try:
-        cursor.execute('ALTER TABLE actual_records ADD COLUMN stock_quantity REAL DEFAULT 0.0')
-    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE actual_records ADD COLUMN inbound_quantity REAL DEFAULT 0")
+    except:
         pass
         
     try:
-        cursor.execute('ALTER TABLE actual_records ADD COLUMN inbound_quantity REAL DEFAULT 0.0')
-    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE actual_records ADD COLUMN stock_quantity REAL DEFAULT 0")
+    except:
         pass
     
     conn.commit()

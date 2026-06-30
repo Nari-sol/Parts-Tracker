@@ -376,8 +376,15 @@ if menu == "📊 期間実績の抽出":
                         # 詳細データテーブル
                         with st.expander("📝 月別詳細データ一覧を表示"):
                             display_df = df.copy()
-                            display_df.columns = ["年月", "品番", "品名", "実績数量", "入庫数量", "残数量"]
-                            st.dataframe(display_df.set_index("年月"), use_container_width=True)
+                            display_df = display_df.rename(columns={
+                                "date": "年月",
+                                "part_number": "品番",
+                                "part_name": "品名",
+                                "quantity": "実績数量",
+                                "inbound_quantity": "入庫数量",
+                                "stock_quantity": "残数量"
+                            })
+                            st.dataframe(display_df.set_index("年月") if "年月" in display_df.columns else display_df, use_container_width=True)
                     
                     else:
                         # --- 複数品番比較モードの表示レイアウト ---

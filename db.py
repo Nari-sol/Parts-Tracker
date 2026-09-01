@@ -40,6 +40,22 @@ def init_db():
         ON actual_records (part_number, date)
     ''')
     
+    # 仕入価格マスタテーブルの作成
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS purchase_price_master (
+            part_number TEXT PRIMARY KEY,
+            purchase_price REAL NOT NULL
+        )
+    ''')
+    
+    # 販売価格マスタテーブルの作成
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sales_price_master (
+            part_number TEXT PRIMARY KEY,
+            sales_price REAL NOT NULL
+        )
+    ''')
+    
     # 既存テーブルへのカラム追加（すでに存在する場合はエラーを無視する）
     try:
         cursor.execute("ALTER TABLE actual_records ADD COLUMN inbound_quantity REAL DEFAULT 0")
@@ -114,6 +130,81 @@ def save_records(records):
     
     return success_count, skip_count
 
+def save_purchase_prices(records):
+    """
+    仕入価格データをデータベースに保存または更新します。
+    (品番) が重複する場合は、自動的に上書き (REPLACE) します。
+    records: 辞書のリスト。各要素は {'part_number': str, 'purchase_price': float}
+    returns: 処理された件数
+    """
+    if not records:
+        return 0
+        
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    count = 0
+    query = '''
+        INSERT OR REPLACE INTO purchase_price_master (part_number, purchase_price)
+        VALUES (?, ?)
+    '''
+    
+    for rec in records:
+        part_number = str(rec.get('part_number', '')).strip()
+        try:
+            purchase_price = float(rec.get('purchase_price', 0))
+        except (ValueError, TypeError):
+            continue
+            
+        if not part_number:
+            continue
+            
+        cursor.execute(query, (part_number, purchase_price))
+        count += 1
+        
+    conn.commit()
+    conn.close()
+    
+    return count
+
+def save_sales_prices(records):
+    """
+    販売価格データをデータベースに保存または更新します。
+    (品番) が重複する場合は、自動的に上書き (REPLACE) します。
+    records: 辞書のリスト。各要素は {'part_number': str, 'sales_price': float}
+    returns: 処理された件数
+    """
+    if not records:
+        return 0
+        
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    count = 0
+    query = '''
+        INSERT OR REPLACE INTO sales_price_master (part_number, sales_price)
+        VALUES (?, ?)
+    '''
+    
+    for rec in records:
+        part_number = str(rec.get('part_number', '')).strip()
+        try:
+            sales_price = float(rec.get('sales_price', 0))
+        except (ValueError, TypeError):
+            continue
+            
+        if not part_number:
+            continue
+            
+        cursor.execute(query, (part_number, sales_price))
+        count += 1
+        
+    conn.commit()
+    conn.close()
+    
+    return count
+
+
 def get_unique_parts():
     """
     登録されているすべてのユニークな品番と品名の一覧を取得します。
@@ -131,6 +222,47 @@ def get_unique_parts():
     conn.close()
     return df.to_dict('records')
 
+def get_unique_part_names():
+    """
+    データベースに登録されているユニークな品名の一覧を取得します。
+    空文字や「品名未登録」は除外します。
+    """
+    conn = get_connection()
+    query = '''
+        SELECT DISTINCT part_name 
+        FROM actual_records 
+        WHERE part_name IS NOT NULL AND part_name != '' AND part_name != '品名未登録'
+        ORDER BY part_name ASC
+    '''
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df['part_name'].tolist()
+
+def search_parts_by_name(selected_name=None, keyword=None):
+    """
+    指定された品名またはキーワードに合致する品番のリストを取得します。
+    """
+    conn = get_connection()
+    
+    query = 'SELECT DISTINCT part_number FROM actual_records WHERE 1=1'
+    params = []
+    
+    if selected_name:
+        query += ' AND part_name = ?'
+        params.append(selected_name)
+        
+    if keyword:
+        # LIKE検索で部分一致
+        query += ' AND part_name LIKE ?'
+        params.append(f'%{keyword}%')
+        
+    query += ' ORDER BY part_number ASC'
+    
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+    
+    return df['part_number'].tolist()
+
 def query_records(part_number, start_date=None, end_date=None):
     """
     指定品番（単一または複数リスト）・期間の実績データを日付順に取得します。
@@ -142,26 +274,54 @@ def query_records(part_number, start_date=None, end_date=None):
     if isinstance(part_number, (list, tuple)):
         if not part_number:
             conn.close()
-            return pd.DataFrame(columns=['date', 'part_number', 'part_name', 'quantity', 'inbound_quantity', 'stock_quantity'])
+            return pd.DataFrame(columns=['date', 'part_number', 'part_name', 'quantity', 'inbound_quantity', 'stock_quantity', 'sales_price', 'purchase_price', 'sales_amount', 'cost_amount', 'gross_profit', 'gross_margin'])
         placeholders = ','.join(['?'] * len(part_number))
-        query = f'SELECT date, part_number, part_name, quantity, inbound_quantity, stock_quantity FROM actual_records WHERE part_number IN ({placeholders})'
+        query = f'''
+            SELECT a.date, a.part_number, a.part_name, a.quantity, a.inbound_quantity, a.stock_quantity,
+                   s.sales_price, p.purchase_price
+            FROM actual_records a
+            LEFT JOIN sales_price_master s ON a.part_number = s.part_number
+            LEFT JOIN purchase_price_master p ON a.part_number = p.part_number
+            WHERE a.part_number IN ({placeholders})
+        '''
         params = list(part_number)
     else:
-        query = 'SELECT date, part_number, part_name, quantity, inbound_quantity, stock_quantity FROM actual_records WHERE part_number = ?'
+        query = '''
+            SELECT a.date, a.part_number, a.part_name, a.quantity, a.inbound_quantity, a.stock_quantity,
+                   s.sales_price, p.purchase_price
+            FROM actual_records a
+            LEFT JOIN sales_price_master s ON a.part_number = s.part_number
+            LEFT JOIN purchase_price_master p ON a.part_number = p.part_number
+            WHERE a.part_number = ?
+        '''
         params = [part_number]
     
     if start_date:
-        query += ' AND date >= ?'
+        query += ' AND a.date >= ?'
         params.append(start_date)
         
     if end_date:
-        query += ' AND date <= ?'
+        query += ' AND a.date <= ?'
         params.append(end_date)
         
-    query += ' ORDER BY date ASC'
+    query += ' ORDER BY a.date ASC'
     
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
+    
+    if not df.empty:
+        df['sales_price'] = df['sales_price'].fillna(0)
+        df['purchase_price'] = df['purchase_price'].fillna(0)
+        df['sales_amount'] = df['quantity'] * df['sales_price']
+        df['cost_amount'] = df['quantity'] * df['purchase_price']
+        df['gross_profit'] = df['sales_amount'] - df['cost_amount']
+        df['gross_margin'] = df.apply(lambda row: row['gross_profit'] / row['sales_amount'] if row['sales_amount'] != 0 else 0.0, axis=1)
+    else:
+        df['sales_amount'] = 0.0
+        df['cost_amount'] = 0.0
+        df['gross_profit'] = 0.0
+        df['gross_margin'] = 0.0
+        
     return df
 
 def get_db_stats():
@@ -184,9 +344,19 @@ def get_db_stats():
         'total_parts': total_parts
     }
 
+def clear_purchase_price_master():
+    """
+    仕入価格マスタ（purchase_price_master）の全データを消去します。
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM purchase_price_master')
+    conn.commit()
+    conn.close()
+
 def clear_db():
     """
-    データベースの全データを消去します。
+    データベースの実績データなど全データを消去します。
     """
     conn = get_connection()
     cursor = conn.cursor()

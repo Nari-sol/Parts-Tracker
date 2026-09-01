@@ -234,46 +234,62 @@ if menu == "📊 期間実績の抽出":
         with col_search_1:
             st.markdown("### 🔍 検索条件")
             
-            # 品番選択モード切り替え
-            search_mode = st.radio(
-                "検索モード",
-                ["単一品番モード", "複数品番比較モード"],
+            # 検索軸切り替え
+            search_axis = st.radio(
+                "検索軸",
+                ["品番で検索", "品名で検索"],
                 horizontal=True,
-                key="search_mode"
+                key="search_axis"
             )
             
-            # 品番入力UIの切り替え
-            if search_mode == "単一品番モード":
-                selected_part = st.text_input(
-                    "対象の品番を入力", 
-                    placeholder="品番を入力またはコピペしてください",
-                    key="input_single_part"
+            if search_axis == "品番で検索":
+                # 品番選択モード切り替え
+                search_mode_ui = st.radio(
+                    "検索モード",
+                    ["単一品番モード", "複数品番比較モード"],
+                    horizontal=True,
+                    key="search_mode"
                 )
-                query_part_param = selected_part.strip()
-            else:
-                selected_parts_labels = st.multiselect(
-                    "対象の品番を複数選択", 
-                    part_options, 
-                    default=[],
-                    key="select_multi_parts"
-                )
-                parts_multiselect = [part_name_map[lbl] for lbl in selected_parts_labels]
+                current_ui_state = f"品番_{search_mode_ui}"
                 
-                # Excel等からコピペ可能なテキストエリア
-                copied_parts_text = st.text_area(
-                    "Excelから品番をコピペ（改行区切りで入力）",
-                    height=100,
-                    placeholder="例:\n000000004039A\n000000006513",
-                    key="copied_parts_text"
-                )
-                
-                # 改行コードで分割し、前後の不要な空白をクレンジングして空行を除外
-                parts_copied = []
-                if copied_parts_text:
-                    parts_copied = [p.strip() for p in copied_parts_text.split("\n") if p.strip()]
+                # 品番入力UIの切り替え
+                if search_mode_ui == "単一品番モード":
+                    selected_part = st.text_input(
+                        "対象の品番を入力", 
+                        placeholder="品番を入力またはコピペしてください",
+                        key="input_single_part"
+                    )
+                    query_part_param = selected_part.strip()
+                else:
+                    selected_parts_labels = st.multiselect(
+                        "対象の品番を複数選択", 
+                        part_options, 
+                        default=[],
+                        key="select_multi_parts"
+                    )
+                    parts_multiselect = [part_name_map[lbl] for lbl in selected_parts_labels]
                     
-                # 選択値と貼り付け値を統合（重複を排除して順序維持）
-                query_part_param = list(dict.fromkeys(parts_multiselect + parts_copied))
+                    # Excel等からコピペ可能なテキストエリア
+                    copied_parts_text = st.text_area(
+                        "Excelから品番をコピペ（改行区切りで入力）",
+                        height=100,
+                        placeholder="例:\n000000004039A\n000000006513",
+                        key="copied_parts_text"
+                    )
+                    
+                    # 改行コードで分割し、前後の不要な空白をクレンジングして空行を除外
+                    parts_copied = []
+                    if copied_parts_text:
+                        parts_copied = [p.strip() for p in copied_parts_text.split("\n") if p.strip()]
+                        
+                    # 選択値と貼り付け値を統合（重複を排除して順序維持）
+                    query_part_param = list(dict.fromkeys(parts_multiselect + parts_copied))
+            else:
+                current_ui_state = "品名"
+                unique_part_names = db.get_unique_part_names()
+                selected_name = st.selectbox("品名を選択", [""] + unique_part_names, key="select_part_name")
+                keyword = st.text_input("品名の一部（キーワード）を入力", placeholder="キーワードを入力", key="input_part_name_keyword")
+                query_part_param = None
                 
             # 集計期間の選択肢をデータベースから取得（昇順）
             ym_options = sorted(db.get_unique_months())
@@ -291,69 +307,131 @@ if menu == "📊 期間実績の抽出":
             start_ym = st.selectbox("集計開始年月", ym_options, index=start_index, key="start_ym")
             end_ym = st.selectbox("集計終了年月", ym_options, index=end_index, key="end_ym")
             
+            display_unit = st.radio("表示単位", ["管理番号（品番）単位", "品名単位"], horizontal=True, key="display_unit")
+            
             submitted = st.button("実績を抽出する", key="btn_execute_search")
         
         with col_search_2:
             # 検索の実行
             if submitted:
-                if search_mode == "単一品番モード" and not query_part_param:
-                    st.warning("👉 品番を入力してください。")
-                    st.session_state.pop('search_df', None)
-                elif search_mode == "複数品番比較モード" and not query_part_param:
-                    st.error("⚠️ 品番が選択または入力されていません。")
-                    st.session_state.pop('search_df', None)
-                elif start_ym > end_ym:
-                    st.error("⚠️ 開始年月は終了年月より前の月を指定してください。")
-                else:
-                    # 単一品番モードの場合、DB内存在チェック
-                    if search_mode == "単一品番モード":
-                        if not db.has_part(query_part_param):
-                            st.error(f"❌ 該当する品番「{query_part_param}」が見つかりません。登録されている品番かご確認ください。")
+                resolved_search_mode = None
+                
+                if search_axis == "品名で検索":
+                    if not selected_name and not keyword.strip():
+                        st.warning("👉 品名を選択するか、キーワードを入力してください。")
+                        st.session_state.pop('search_df', None)
+                    else:
+                        found_parts = db.search_parts_by_name(selected_name if selected_name else None, keyword.strip() if keyword.strip() else None)
+                        if not found_parts:
+                            st.warning("該当する品名のデータが見つかりませんでした")
                             st.session_state.pop('search_df', None)
                         else:
+                            if len(found_parts) == 1:
+                                resolved_search_mode = "単一品番モード"
+                                query_part_param = found_parts[0]
+                            else:
+                                resolved_search_mode = "複数品番比較モード"
+                                query_part_param = found_parts
+                else:
+                    resolved_search_mode = search_mode_ui
+                
+                if query_part_param is not None or (search_axis == "品名で検索" and resolved_search_mode is None):
+                    if resolved_search_mode is None:
+                        pass # error already shown
+                    elif resolved_search_mode == "単一品番モード" and not query_part_param:
+                        st.warning("👉 品番を入力してください。")
+                        st.session_state.pop('search_df', None)
+                    elif resolved_search_mode == "複数品番比較モード" and not query_part_param:
+                        st.error("⚠️ 品番が選択または入力されていません。")
+                        st.session_state.pop('search_df', None)
+                    elif start_ym > end_ym:
+                        st.error("⚠️ 開始年月は終了年月より前の月を指定してください。")
+                    else:
+                        # 単一品番モードの場合、DB内存在チェック
+                        if resolved_search_mode == "単一品番モード":
+                            if not db.has_part(query_part_param):
+                                st.error(f"❌ 該当する品番「{query_part_param}」が見つかりません。登録されている品番かご確認ください。")
+                                st.session_state.pop('search_df', None)
+                            else:
+                                df = db.query_records(query_part_param, start_ym, end_ym)
+                                st.session_state['search_df'] = df
+                                st.session_state['last_searched_part'] = query_part_param
+                                st.session_state['last_search_mode'] = resolved_search_mode
+                                st.session_state['last_ui_state'] = f"{current_ui_state}_{display_unit}"
+                                st.session_state['last_display_unit'] = display_unit
+                                st.session_state['last_start_ym'] = start_ym
+                                st.session_state['last_end_ym'] = end_ym
+                        else:
+                            # 複数品番比較モード
                             df = db.query_records(query_part_param, start_ym, end_ym)
                             st.session_state['search_df'] = df
                             st.session_state['last_searched_part'] = query_part_param
-                            st.session_state['last_search_mode'] = search_mode
+                            st.session_state['last_search_mode'] = resolved_search_mode
+                            st.session_state['last_ui_state'] = f"{current_ui_state}_{display_unit}"
+                            st.session_state['last_display_unit'] = display_unit
                             st.session_state['last_start_ym'] = start_ym
                             st.session_state['last_end_ym'] = end_ym
-                    else:
-                        # 複数品番比較モード
-                        df = db.query_records(query_part_param, start_ym, end_ym)
-                        st.session_state['search_df'] = df
-                        st.session_state['last_searched_part'] = query_part_param
-                        st.session_state['last_search_mode'] = search_mode
-                        st.session_state['last_start_ym'] = start_ym
-                        st.session_state['last_end_ym'] = end_ym
 
             # 結果表示
-            if 'search_df' not in st.session_state or st.session_state.get('last_search_mode') != search_mode:
+            if 'search_df' not in st.session_state or st.session_state.get('last_ui_state') != f"{current_ui_state}_{display_unit}":
                 st.info("💡 検索条件を入力し、「実績を抽出する」をクリックしてください。")
                 
-            elif 'search_df' in st.session_state and st.session_state.get('last_search_mode') == search_mode:
-                df = st.session_state['search_df']
+            elif 'search_df' in st.session_state and st.session_state.get('last_ui_state') == f"{current_ui_state}_{display_unit}":
+                search_mode = st.session_state.get('last_search_mode')
+                df = st.session_state['search_df'].copy()
+                
+                # 異常値データのフィルタリング（粗利マイナス、粗利率100%以上を除外）
+                if not df.empty:
+                    df = df[(df['gross_profit'] >= 0) & (df['gross_margin'] < 1.0)]
+                    
                 last_param = st.session_state.get('last_searched_part')
+                last_display_unit = st.session_state.get('last_display_unit')
+                
+                # 品名単位の場合のデータ集約
+                if last_display_unit == "品名単位" and not df.empty:
+                    # 日付と品名でグループ化
+                    df = df.groupby(['date', 'part_name']).agg({
+                        'quantity': 'sum',
+                        'inbound_quantity': 'sum',
+                        'stock_quantity': 'sum',
+                        'sales_amount': 'sum',
+                        'cost_amount': 'sum',
+                        'gross_profit': 'sum'
+                    }).reset_index()
+                    df['gross_margin'] = df.apply(lambda row: row['gross_profit'] / row['sales_amount'] if row['sales_amount'] != 0 else 0.0, axis=1)
+                    # グラフ用に part_number を part_name で埋める
+                    df['part_number'] = df['part_name']
                 
                 # 入力パラメータとセッションの状態が一致している場合のみ表示
                 if df.empty:
-                    st.warning("指定された期間・品番に合致するデータが見つかりませんでした。")
+                    if st.session_state['search_df'].empty:
+                        st.warning("指定された期間・品番に合致するデータが見つかりませんでした。")
+                    else:
+                        st.warning("指定された条件内で、正常に粗利計算ができるデータが存在しませんでした（マイナス・粗利率100%等を除外済）。")
                 else:
                     if search_mode == "単一品番モード":
                         # --- 単一品番モードの表示レイアウト ---
-                        part_number = last_param
                         part_name = df['part_name'].iloc[0] if not df['part_name'].empty and df['part_name'].iloc[0] else "品名未登録"
                         
-                        st.markdown(f"### 📊 抽出結果: {part_number} ({part_name})")
+                        if last_display_unit == "品名単位":
+                            st.markdown(f"### 📊 抽出結果: {part_name} (品名単位)")
+                        else:
+                            st.markdown(f"### 📊 抽出結果: {last_param} ({part_name})")
                         
                         # KPI指標カード
                         total_qty = df['quantity'].sum()
                         avg_qty = df['quantity'].mean()
+                        total_sales = df['sales_amount'].sum()
+                        total_profit = df['gross_profit'].sum()
+                        margin_pct = (total_profit / total_sales * 100) if total_sales != 0 else 0.0
                         months_count = len(df)
                         
-                        col_kpi_1, col_kpi_2, col_kpi_3 = st.columns(3)
+                        col_kpi_1, col_kpi_2, col_kpi_3, col_kpi_4, col_kpi_5 = st.columns(5)
                         col_kpi_1.metric("期間累計実績数量", f"{int(total_qty):,}")
                         col_kpi_2.metric("期間月平均実績", f"{avg_qty:.1f}")
-                        col_kpi_3.metric("該当データ月数", f"{months_count} ヶ月")
+                        col_kpi_3.metric("累計売上実績", f"¥{int(total_sales):,}")
+                        col_kpi_4.metric("累計粗利", f"¥{int(total_profit):,}")
+                        col_kpi_5.metric("全体粗利率", f"{margin_pct:.1f}%")
                         
                         # 推移グラフ
                         fig = px.line(
@@ -376,36 +454,61 @@ if menu == "📊 期間実績の抽出":
                         # 詳細データテーブル
                         with st.expander("📝 月別詳細データ一覧を表示"):
                             display_df = df.copy()
-                            display_df = display_df.rename(columns={
+                            rename_cols = {
                                 "date": "年月",
-                                "part_number": "品番",
                                 "part_name": "品名",
                                 "quantity": "実績数量",
                                 "inbound_quantity": "入庫数量",
-                                "stock_quantity": "残数量"
-                            })
+                                "stock_quantity": "残数量",
+                                "sales_amount": "売上実績",
+                                "cost_amount": "仕入原価",
+                                "gross_profit": "粗利",
+                                "gross_margin": "粗利率"
+                            }
+                            if last_display_unit != "品名単位":
+                                rename_cols["part_number"] = "品番"
+                            
+                            display_df = display_df.rename(columns=rename_cols)
+                            
+                            # 粗利率を%表示に
+                            if "粗利率" in display_df.columns:
+                                display_df["粗利率"] = (display_df["粗利率"] * 100).round(1).astype(str) + "%"
+                                
                             st.dataframe(display_df.set_index("年月") if "年月" in display_df.columns else display_df, use_container_width=True)
                     
                     else:
                         # --- 複数品番比較モードの表示レイアウト ---
-                        st.markdown("### 📊 抽出結果: 複数品番の実績比較")
+                        st.markdown(f"### 📊 抽出結果: 複数{'品名' if last_display_unit == '品名単位' else '品番'}の実績比較")
                         
                         # 1. サマリーテーブル比較の作成
                         summary_data = []
                         for p_num in df['part_number'].unique():
                             p_df = df[df['part_number'] == p_num]
                             p_name = p_df['part_name'].iloc[0] if not p_df['part_name'].empty and p_df['part_name'].iloc[0] else "品名未登録"
-                            summary_data.append({
-                                "品番": p_num,
+                            
+                            sum_sales = p_df['sales_amount'].sum()
+                            sum_profit = p_df['gross_profit'].sum()
+                            margin = (sum_profit / sum_sales * 100) if sum_sales != 0 else 0.0
+                            
+                            row_data = {
                                 "品名": p_name,
                                 "期間累計実績": int(p_df['quantity'].sum()),
                                 "月平均実績": round(p_df['quantity'].mean(), 1),
+                                "売上実績": int(sum_sales),
+                                "粗利": int(sum_profit),
+                                "粗利率": f"{margin:.1f}%",
                                 "データ月数": len(p_df)
-                            })
+                            }
+                            if last_display_unit != "品名単位":
+                                row_data["品番"] = p_num
+                                
+                            summary_data.append(row_data)
                             
                         df_summary = pd.DataFrame(summary_data)
-                        st.markdown("#### 📋 品番ごとの実績サマリー比較")
-                        st.dataframe(df_summary.set_index("品番"), use_container_width=True)
+                        
+                        st.markdown(f"#### 📋 {'品名' if last_display_unit == '品名単位' else '品番'}ごとの実績サマリー比較")
+                        idx_col = "品名" if last_display_unit == "品名単位" else "品番"
+                        st.dataframe(df_summary.set_index(idx_col), use_container_width=True)
                         
                         # 2. 複数系列の折れ線グラフ
                         fig = px.line(
@@ -413,8 +516,8 @@ if menu == "📊 期間実績の抽出":
                             x='date',
                             y='quantity',
                             color='part_number',
-                            title="月別実績数量の比較推移",
-                            labels={'date': '年月', 'quantity': '数量', 'part_number': '品番'},
+                            title=f"月別実績数量の比較推移 ({'品名' if last_display_unit == '品名単位' else '品番'}別)",
+                            labels={'date': '年月', 'quantity': '数量', 'part_number': '品名' if last_display_unit == '品名単位' else '品番'},
                             markers=True
                         )
                         fig.update_layout(
@@ -426,13 +529,15 @@ if menu == "📊 期間実績の抽出":
                         st.plotly_chart(fig, use_container_width=True)
                         
                         # 3. 年月×品番のピボットテーブル
-                        st.markdown("#### 📝 横並び比較データ（年月 × 品番）")
+                        st.markdown(f"#### 📝 横並び比較データ（年月 × {'品名' if last_display_unit == '品名単位' else '品番'}）")
                         pivot_df = df.pivot_table(
                             index='date', 
                             columns='part_number', 
                             values='quantity', 
                             aggfunc='sum'
                         ).fillna(0.0)
+                        if last_display_unit == "品名単位":
+                            pivot_df.columns.name = "品名"
                         st.dataframe(pivot_df, use_container_width=True)
 
 # ==============================================================================
@@ -1008,6 +1113,141 @@ elif menu == "📂 データ管理":
                                     
             except Exception as e:
                 st.error(f"❌ ファイルのパースまたは処理中にエラーが発生しました: {e}")
+
+        st.markdown("---")
+        st.markdown("### 💰 仕入価格データのアップロード")
+        price_file = st.file_uploader("仕入価格Excelファイル (.xlsx) をアップロードしてください", type=["xlsx"], key="price_uploader")
+        
+        if price_file is not None:
+            # ファイル名による月指定チェック
+            import re
+            month_match = re.search(r'(\d+月)', price_file.name)
+            if not month_match:
+                st.error("ファイル名に〇月という対象月の指定が含まれていません。ファイル名を修正してから再度アップロードしてください。")
+                st.stop()
+            
+            target_month_str = month_match.group(1)
+
+            try:
+                # ファイル名チェックを通過した場合のみ、pandasでファイルを読み込みます
+                # 5行目がヘッダー(インデックス4)
+                df_price = pd.read_excel(price_file, header=4)
+                
+                # A列「コード」、C列「総仕入数量」、F列「総仕入額」が存在するか確認
+                required_cols = ["コード", "総仕入数量", "総仕入額"]
+                if not all(col in df_price.columns for col in required_cols):
+                    st.error(f"❌ Excelファイルに必須列（{', '.join(required_cols)}）が見つかりません。5行目の項目名を確認してください。")
+                    st.write("検出された項目名:", list(df_price.columns))
+                else:
+                    # 欠損値の除去
+                    df_price_clean = df_price.dropna(subset=["コード"]).copy()
+                    
+                    # コード（品番）のクレンジング: 空白除去、ハイフンで分割して左側の親品番を取得
+                    df_price_clean["part_number"] = df_price_clean["コード"].astype(str).apply(lambda x: x.split("-")[0].strip())
+                    
+                    # 処理後の親品番をベースに重複排除 (最初の行を優先)
+                    df_price_clean = df_price_clean.drop_duplicates(subset=["part_number"], keep='first')
+                    
+                    # データの抽出と単価の自動計算
+                    records_to_save = []
+                    for _, row in df_price_clean.iterrows():
+                        part_num = row["part_number"]
+                        
+                        try:
+                            qty = float(row["総仕入数量"])
+                        except (ValueError, TypeError):
+                            qty = 0.0
+                            
+                        try:
+                            amount = float(row["総仕入額"])
+                        except (ValueError, TypeError):
+                            amount = 0.0
+                            
+                        # ゼロ除算対策（数量が0以下の場合は単価0とする）
+                        if pd.isna(qty) or qty <= 0:
+                            price = 0
+                        else:
+                            # 算出した単価を四捨五入して整数化
+                            price = int(round(amount / qty))
+                            
+                        if part_num and part_num.lower() not in ['nan', 'none', '']:
+                            records_to_save.append({
+                                'part_number': part_num,
+                                'purchase_price': price
+                            })
+                            
+                    if records_to_save:
+                        # プレビュー表示
+                        st.write("📋 読み込み結果プレビュー:")
+                        preview_df = pd.DataFrame(records_to_save)
+                        preview_df.columns = ["品番", "仕入単価"]
+                        st.dataframe(preview_df.head(10), use_container_width=True)
+                        
+                        with st.form("price_import_form"):
+                            st.write(f"上記 {len(records_to_save)} 件の仕入価格データをマスタとして登録します。")
+                            st.warning("⚠️ 既に登録されている品番は最新の価格に上書きされます。")
+                            
+                            if st.form_submit_button("仕入価格データを登録・上書き"):
+                                success_count = db.save_purchase_prices(records_to_save)
+                                st.success(f"🎉 {target_month_str}分の仕入価格データをマスタに反映しました！ (登録/更新件数: {success_count}件)")
+                                st.balloons()
+                    else:
+                        st.warning("有効なデータが見つかりませんでした。")
+            except Exception as e:
+                st.error(f"❌ ファイルのパースまたは処理中にエラーが発生しました: {e}")
+
+        st.markdown("---")
+        st.markdown("### 🏷️ 販売価格データのアップロード")
+        sales_price_file = st.file_uploader("販売価格Excelファイル (.xlsx) をアップロードしてください", type=["xlsx"], key="sales_price_uploader")
+        
+        if sales_price_file is not None:
+            try:
+                # pandasで読み込み (デフォルトで1行目がヘッダー)
+                df_sales = pd.read_excel(sales_price_file)
+                
+                if "code" not in df_sales.columns or "price" not in df_sales.columns:
+                    st.error("❌ Excelファイルに「code」列または「price」列が見つかりません。")
+                else:
+                    df_sales_clean = df_sales.dropna(subset=["code"]).copy()
+                    
+                    # code列を文字列化してハイフンで分割、左側(親品番)を取得
+                    df_sales_clean["part_number"] = df_sales_clean["code"].astype(str).apply(lambda x: x.split("-")[0].strip())
+                    
+                    # 親品番で重複排除 (一番上のデータを残す)
+                    df_sales_clean = df_sales_clean.drop_duplicates(subset=["part_number"], keep='first')
+                    
+                    sales_records = []
+                    for _, row in df_sales_clean.iterrows():
+                        p_num = row["part_number"]
+                        try:
+                            s_price = float(row["price"])
+                        except (ValueError, TypeError):
+                            s_price = 0.0
+                            
+                        if p_num and p_num.lower() not in ['nan', 'none', '']:
+                            sales_records.append({
+                                'part_number': p_num,
+                                'sales_price': s_price
+                            })
+                            
+                    if sales_records:
+                        st.write("📋 読み込み結果プレビュー:")
+                        preview_sales_df = pd.DataFrame(sales_records)
+                        preview_sales_df.columns = ["品番", "販売価格"]
+                        st.dataframe(preview_sales_df.head(10), use_container_width=True)
+                        
+                        with st.form("sales_price_import_form"):
+                            st.write(f"上記 {len(sales_records)} 件の販売価格データをマスタとして登録します。")
+                            st.warning("⚠️ 既に登録されている品番は最新の価格に上書きされます。")
+                            
+                            if st.form_submit_button("販売価格データを登録・上書き"):
+                                success_count_sales = db.save_sales_prices(sales_records)
+                                st.success(f"🎉 販売価格データをマスタに反映しました！ (登録/更新件数: {success_count_sales}件)")
+                                st.balloons()
+                    else:
+                        st.warning("有効なデータが見つかりませんでした。")
+            except Exception as e:
+                st.error(f"❌ ファイルのパースまたは処理中にエラーが発生しました: {e}")
                 
     with col_db_2:
         st.markdown("### 🗄️ データベースステータス")
@@ -1069,6 +1309,16 @@ elif menu == "📂 データ管理":
                 st.rerun()
         else:
             st.caption("※削除可能な月データが登録されていません。")
+
+        st.markdown("---")
+        st.markdown("### 🧹 仕入価格マスタの初期化")
+        st.write("仕入価格マスタのデータのみを全件消去します。実績データや販売価格マスタには影響しません。")
+        
+        confirm_clear_purchase = st.checkbox("【確認】仕入価格データをすべて消去します", key="confirm_clear_purchase")
+        if st.button("🗑️ 仕入価格マスタをリセット", disabled=not confirm_clear_purchase, key="btn_clear_purchase"):
+            db.clear_purchase_price_master()
+            st.success("🎉 仕入価格マスタをリセットしました。")
+            st.rerun()
 
         st.markdown("---")
         st.markdown("### ⚠️ データベースの初期化")

@@ -380,9 +380,9 @@ if menu == "📊 期間実績の抽出":
                 search_mode = st.session_state.get('last_search_mode')
                 df = st.session_state['search_df'].copy()
                 
-                # 異常値データのフィルタリング（粗利マイナス、粗利率100%以上を除外）
+                # 異常値データのフィルタリング（粗利率が0.0以下、および1.0以上を除外）
                 if not df.empty:
-                    df = df[(df['gross_profit'] >= 0) & (df['gross_margin'] < 1.0)]
+                    df = df[(df['gross_margin'] > 0.0) & (df['gross_margin'] < 1.0)]
                     
                 last_param = st.session_state.get('last_searched_part')
                 last_display_unit = st.session_state.get('last_display_unit')
@@ -407,7 +407,7 @@ if menu == "📊 期間実績の抽出":
                     if st.session_state['search_df'].empty:
                         st.warning("指定された期間・品番に合致するデータが見つかりませんでした。")
                     else:
-                        st.warning("指定された条件内で、正常に粗利計算ができるデータが存在しませんでした（マイナス・粗利率100%等を除外済）。")
+                        st.warning("指定された条件内で、正常に粗利計算ができるデータが存在しませんでした")
                 else:
                     if search_mode == "単一品番モード":
                         # --- 単一品番モードの表示レイアウト ---

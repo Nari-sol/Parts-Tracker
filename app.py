@@ -307,8 +307,6 @@ if menu == "📊 期間実績の抽出":
             start_ym = st.selectbox("集計開始年月", ym_options, index=start_index, key="start_ym")
             end_ym = st.selectbox("集計終了年月", ym_options, index=end_index, key="end_ym")
             
-            display_unit = st.radio("表示単位", ["管理番号（品番）単位", "品名単位"], horizontal=True, key="display_unit")
-            
             submitted = st.button("実績を抽出する", key="btn_execute_search")
         
         with col_search_2:
@@ -357,8 +355,7 @@ if menu == "📊 期間実績の抽出":
                                 st.session_state['search_df'] = df
                                 st.session_state['last_searched_part'] = query_part_param
                                 st.session_state['last_search_mode'] = resolved_search_mode
-                                st.session_state['last_ui_state'] = f"{current_ui_state}_{display_unit}"
-                                st.session_state['last_display_unit'] = display_unit
+                                st.session_state['last_ui_state'] = current_ui_state
                                 st.session_state['last_start_ym'] = start_ym
                                 st.session_state['last_end_ym'] = end_ym
                         else:
@@ -367,71 +364,37 @@ if menu == "📊 期間実績の抽出":
                             st.session_state['search_df'] = df
                             st.session_state['last_searched_part'] = query_part_param
                             st.session_state['last_search_mode'] = resolved_search_mode
-                            st.session_state['last_ui_state'] = f"{current_ui_state}_{display_unit}"
-                            st.session_state['last_display_unit'] = display_unit
+                            st.session_state['last_ui_state'] = current_ui_state
                             st.session_state['last_start_ym'] = start_ym
                             st.session_state['last_end_ym'] = end_ym
 
             # 結果表示
-            if 'search_df' not in st.session_state or st.session_state.get('last_ui_state') != f"{current_ui_state}_{display_unit}":
+            if 'search_df' not in st.session_state or st.session_state.get('last_ui_state') != current_ui_state:
                 st.info("💡 検索条件を入力し、「実績を抽出する」をクリックしてください。")
                 
-            elif 'search_df' in st.session_state and st.session_state.get('last_ui_state') == f"{current_ui_state}_{display_unit}":
+            elif 'search_df' in st.session_state and st.session_state.get('last_ui_state') == current_ui_state:
                 search_mode = st.session_state.get('last_search_mode')
                 df = st.session_state['search_df'].copy()
-                
-                # 異常値データのフィルタリング（粗利率が0.0以下、および1.0以上を除外）
-                if not df.empty:
-                    df = df[(df['gross_margin'] > 0.0) & (df['gross_margin'] < 1.0)]
-                    
                 last_param = st.session_state.get('last_searched_part')
-                last_display_unit = st.session_state.get('last_display_unit')
-                
-                # 品名単位の場合のデータ集約
-                if last_display_unit == "品名単位" and not df.empty:
-                    # 日付と品名でグループ化
-                    df = df.groupby(['date', 'part_name']).agg({
-                        'quantity': 'sum',
-                        'inbound_quantity': 'sum',
-                        'stock_quantity': 'sum',
-                        'sales_amount': 'sum',
-                        'cost_amount': 'sum',
-                        'gross_profit': 'sum'
-                    }).reset_index()
-                    df['gross_margin'] = df.apply(lambda row: row['gross_profit'] / row['sales_amount'] if row['sales_amount'] != 0 else 0.0, axis=1)
-                    # グラフ用に part_number を part_name で埋める
-                    df['part_number'] = df['part_name']
                 
                 # 入力パラメータとセッションの状態が一致している場合のみ表示
                 if df.empty:
-                    if st.session_state['search_df'].empty:
-                        st.warning("指定された期間・品番に合致するデータが見つかりませんでした。")
-                    else:
-                        st.warning("指定された条件内で、正常に粗利計算ができるデータが存在しませんでした")
+                    st.warning("指定された期間・品番に合致するデータが見つかりませんでした。")
                 else:
                     if search_mode == "単一品番モード":
                         # --- 単一品番モードの表示レイアウト ---
                         part_name = df['part_name'].iloc[0] if not df['part_name'].empty and df['part_name'].iloc[0] else "品名未登録"
-                        
-                        if last_display_unit == "品名単位":
-                            st.markdown(f"### 📊 抽出結果: {part_name} (品名単位)")
-                        else:
-                            st.markdown(f"### 📊 抽出結果: {last_param} ({part_name})")
+                        st.markdown(f"### 📊 抽出結果: {last_param} ({part_name})")
                         
                         # KPI指標カード
                         total_qty = df['quantity'].sum()
                         avg_qty = df['quantity'].mean()
-                        total_sales = df['sales_amount'].sum()
-                        total_profit = df['gross_profit'].sum()
-                        margin_pct = (total_profit / total_sales * 100) if total_sales != 0 else 0.0
                         months_count = len(df)
                         
-                        col_kpi_1, col_kpi_2, col_kpi_3, col_kpi_4, col_kpi_5 = st.columns(5)
+                        col_kpi_1, col_kpi_2, col_kpi_3 = st.columns(3)
                         col_kpi_1.metric("期間累計実績数量", f"{int(total_qty):,}")
                         col_kpi_2.metric("期間月平均実績", f"{avg_qty:.1f}")
-                        col_kpi_3.metric("累計売上実績", f"¥{int(total_sales):,}")
-                        col_kpi_4.metric("累計粗利", f"¥{int(total_profit):,}")
-                        col_kpi_5.metric("全体粗利率", f"{margin_pct:.1f}%")
+                        col_kpi_3.metric("データ月数", f"{months_count}ヶ月")
                         
                         # 推移グラフ
                         fig = px.line(
@@ -453,32 +416,19 @@ if menu == "📊 期間実績の抽出":
                         
                         # 詳細データテーブル
                         with st.expander("📝 月別詳細データ一覧を表示"):
-                            display_df = df.copy()
-                            rename_cols = {
+                            display_df = df.rename(columns={
                                 "date": "年月",
+                                "part_number": "品番",
                                 "part_name": "品名",
                                 "quantity": "実績数量",
                                 "inbound_quantity": "入庫数量",
-                                "stock_quantity": "残数量",
-                                "sales_amount": "売上実績",
-                                "cost_amount": "仕入原価",
-                                "gross_profit": "粗利",
-                                "gross_margin": "粗利率"
-                            }
-                            if last_display_unit != "品名単位":
-                                rename_cols["part_number"] = "品番"
-                            
-                            display_df = display_df.rename(columns=rename_cols)
-                            
-                            # 粗利率を%表示に
-                            if "粗利率" in display_df.columns:
-                                display_df["粗利率"] = (display_df["粗利率"] * 100).round(1).astype(str) + "%"
-                                
-                            st.dataframe(display_df.set_index("年月") if "年月" in display_df.columns else display_df, use_container_width=True)
+                                "stock_quantity": "残数量"
+                            })
+                            st.dataframe(display_df.set_index("年月"), use_container_width=True)
                     
                     else:
                         # --- 複数品番比較モードの表示レイアウト ---
-                        st.markdown(f"### 📊 抽出結果: 複数{'品名' if last_display_unit == '品名単位' else '品番'}の実績比較")
+                        st.markdown("### 📊 抽出結果: 複数品番の実績比較")
                         
                         # 1. サマリーテーブル比較の作成
                         summary_data = []
@@ -486,29 +436,18 @@ if menu == "📊 期間実績の抽出":
                             p_df = df[df['part_number'] == p_num]
                             p_name = p_df['part_name'].iloc[0] if not p_df['part_name'].empty and p_df['part_name'].iloc[0] else "品名未登録"
                             
-                            sum_sales = p_df['sales_amount'].sum()
-                            sum_profit = p_df['gross_profit'].sum()
-                            margin = (sum_profit / sum_sales * 100) if sum_sales != 0 else 0.0
-                            
-                            row_data = {
+                            summary_data.append({
+                                "品番": p_num,
                                 "品名": p_name,
                                 "期間累計実績": int(p_df['quantity'].sum()),
                                 "月平均実績": round(p_df['quantity'].mean(), 1),
-                                "売上実績": int(sum_sales),
-                                "粗利": int(sum_profit),
-                                "粗利率": f"{margin:.1f}%",
                                 "データ月数": len(p_df)
-                            }
-                            if last_display_unit != "品名単位":
-                                row_data["品番"] = p_num
-                                
-                            summary_data.append(row_data)
+                            })
                             
                         df_summary = pd.DataFrame(summary_data)
                         
-                        st.markdown(f"#### 📋 {'品名' if last_display_unit == '品名単位' else '品番'}ごとの実績サマリー比較")
-                        idx_col = "品名" if last_display_unit == "品名単位" else "品番"
-                        st.dataframe(df_summary.set_index(idx_col), use_container_width=True)
+                        st.markdown("#### 📋 品番ごとの実績サマリー比較")
+                        st.dataframe(df_summary.set_index("品番"), use_container_width=True)
                         
                         # 2. 複数系列の折れ線グラフ
                         fig = px.line(
@@ -516,8 +455,8 @@ if menu == "📊 期間実績の抽出":
                             x='date',
                             y='quantity',
                             color='part_number',
-                            title=f"月別実績数量の比較推移 ({'品名' if last_display_unit == '品名単位' else '品番'}別)",
-                            labels={'date': '年月', 'quantity': '数量', 'part_number': '品名' if last_display_unit == '品名単位' else '品番'},
+                            title="月別実績数量の比較推移 (品番別)",
+                            labels={'date': '年月', 'quantity': '数量', 'part_number': '品番'},
                             markers=True
                         )
                         fig.update_layout(
@@ -529,15 +468,13 @@ if menu == "📊 期間実績の抽出":
                         st.plotly_chart(fig, use_container_width=True)
                         
                         # 3. 年月×品番のピボットテーブル
-                        st.markdown(f"#### 📝 横並び比較データ（年月 × {'品名' if last_display_unit == '品名単位' else '品番'}）")
+                        st.markdown("#### 📝 横並び比較データ（年月 × 品番）")
                         pivot_df = df.pivot_table(
                             index='date', 
                             columns='part_number', 
                             values='quantity', 
                             aggfunc='sum'
                         ).fillna(0.0)
-                        if last_display_unit == "品名単位":
-                            pivot_df.columns.name = "品名"
                         st.dataframe(pivot_df, use_container_width=True)
 
 # ==============================================================================
